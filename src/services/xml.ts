@@ -1,11 +1,10 @@
-const SALLA_API_URL = "https://api.salla.dev/admin/v2";
-
 export function generateXml(
   products: any[],
-  brand = "Azran"
+  brand = "Azran",
+  includeVariants = true
 ) {
   const items = products
-    .map((product) => generateItem(product, brand))
+    .map((product) => generateItem(product, brand, includeVariants))
     .join("\n");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -27,7 +26,8 @@ ${items}
 
 function generateItem(
   product: any,
-  brand: string
+  brand: string,
+  includeVariants: boolean
 ) {
   const price = getPrice(product);
 
@@ -63,30 +63,10 @@ function generateItem(
           .join("\n")
       : "";
 
-  /*
-   * For variants:
-   *
-   * g:id = actual Salla variant/SKU ID
-   * g:item_group_id = parent Salla product ID
-   *
-   * For normal products:
-   *
-   * g:id = product ID
-   * no item_group_id
-   */
-  const metaId =
-    product.variant_id
-      ? String(product.variant_id)
-      : String(
-          product.product_id ??
-          product.id
-        );
-
   const itemGroupId =
-    product.variant_id &&
-    product.product_id
+    includeVariants && product.item_group_id
       ? `    <g:item_group_id>${xmlEscape(
-          product.product_id
+          product.item_group_id
         )}</g:item_group_id>`
       : "";
 
@@ -97,31 +77,8 @@ function generateItem(
         )}</g:size>`
       : "";
 
-  /*
-   * Optional internal/reference fields.
-   *
-   * These are NOT used for Meta's grouping.
-   * Meta grouping is done through:
-   *
-   * g:id
-   * g:item_group_id
-   */
-  const productIdXml =
-    product.product_id
-      ? `      <product_id>${xmlEscape(
-          product.product_id
-        )}</product_id>`
-      : "";
-
-  const variantIdXml =
-    product.variant_id
-      ? `      <variant_id>${xmlEscape(
-          product.variant_id
-        )}</variant_id>`
-      : "";
-
   return `    <item>
-      <g:id>${xmlEscape(metaId)}</g:id>
+      <g:id>${xmlEscape(product.id)}</g:id>
 
       <g:title>${xmlEscape(
         product.name
@@ -163,10 +120,6 @@ ${itemGroupId}
 
 ${size}
 
-${productIdXml}
-
-${variantIdXml}
-
       <g:google_product_category>${xmlEscape(
         getGoogleCategory(product)
       )}</g:google_product_category>
@@ -190,9 +143,7 @@ ${product.gtin
 ${
   product.weight
     ? `      <g:shipping_weight>${xmlEscape(
-        `${product.weight} ${
-          product.weight_type ?? "kg"
-        }`
+        `${product.weight} ${product.weight_type ?? "kg"}`
       )}</g:shipping_weight>`
     : ""
 }
@@ -229,6 +180,10 @@ function getSalePrice(product: any) {
     product.price ??
     0;
 
+  /*
+   * Only send sale_price if it is actually
+   * lower than the regular price.
+   */
   if (
     Number(sale) <= 0 ||
     Number(sale) >= Number(regular)
@@ -282,6 +237,9 @@ function cleanDescription(html?: string) {
 }
 
 
+/**
+ * Escape XML special characters.
+ */
 function xmlEscape(value: any) {
   if (value == null) {
     return "";
@@ -296,21 +254,17 @@ function xmlEscape(value: any) {
 }
 
 
+const SALLA_API_URL = "https://api.salla.dev/admin/v2";
+
 function getAuthHeader(token: string): string {
   const cleanToken = token.trim();
 
-  return cleanToken
-    .toLowerCase()
-    .startsWith("bearer ")
+  return cleanToken.toLowerCase().startsWith("bearer ")
     ? cleanToken
     : `Bearer ${cleanToken}`;
 }
 
-
-async function sallaFetch(
-  token: string,
-  url: string
-) {
+async function sallaFetch(token: string, url: string) {
   const response = await fetch(url, {
     headers: {
       Authorization: getAuthHeader(token),
@@ -322,20 +276,14 @@ async function sallaFetch(
     const body = await response.text();
 
     throw new Error(
-      `Salla API error ${response.status}: ${body.slice(
-        0,
-        500
-      )}`
+      `Salla API error ${response.status}: ${body.slice(0, 500)}`
     );
   }
 
   return response.json();
 }
 
-
-export async function getProducts(
-  token: string
-) {
+export async function getProducts(token: string) {
   const products: any[] = [];
   let page = 1;
 
@@ -346,46 +294,27 @@ export async function getProducts(
     );
 
     for (const product of json.data ?? []) {
-      if (
-        !product.is_available ||
-        product.status !== "sale"
-      ) {
+      if (!product.is_available || product.status !== "sale") {
         continue;
       }
 
       const skus = product.skus ?? [];
 
-      /*
-       * ==========================================
-       * NORMAL PRODUCT
-       * ==========================================
-       */
+      // Normal product
       if (skus.length === 0) {
-        products.push(
-          normalizeProduct(product)
-        );
-
+        products.push(normalizeProduct(product));
         continue;
       }
 
-      /*
-       * ==========================================
-       * PRODUCT WITH VARIANTS
-       * ==========================================
-       */
+      // Product variants / SKUs
       for (const sku of skus) {
         const productId = String(product.id);
         const variantId = String(sku.id);
 
         const stock = Number(
-          sku.stock_quantity ??
-          product.quantity ??
-          0
+          sku.stock_quantity ?? product.quantity ?? 0
         );
 
-        /*
-         * Skip unavailable variants.
-         */
         if (
           !sku.unlimited_quantity &&
           stock <= 0
@@ -394,9 +323,17 @@ export async function getProducts(
         }
 
         /*
-         * These are OPTION VALUE IDs.
+         * IMPORTANT:
          *
-         * They are NOT the variant ID.
+         * sku.related_option_values contains OPTION VALUE IDs.
+         *
+         * Example:
+         * 665912211 = option value
+         *
+         * sku.id is the actual variant/SKU ID.
+         *
+         * Example:
+         * 1240497430 = actual variant
          */
         const optionValueIds =
           sku.related_option_values ?? [];
@@ -407,42 +344,30 @@ export async function getProducts(
             optionValueIds
           );
 
-        /*
-         * ========================================
-         * IMPORTANT META STRUCTURE
-         * ========================================
-         *
-         * g:id
-         *      = REAL SALLA VARIANT ID
-         *
-         * product_id
-         *      = REAL SALLA PRODUCT ID
-         *
-         * variant_id
-         *      = REAL SALLA VARIANT ID
-         *
-         * g:item_group_id
-         *      = PRODUCT ID
-         *
-         * Example:
-         *
-         * product_id     = 1695733188
-         * variant_id     = 1553437301
-         *
-         * g:id           = 1553437301
-         * g:item_group_id = 1695733188
-         */
         products.push({
           ...product,
 
+          /*
+           * Meta ID.
+           *
+           * Always starts with 2.
+           */
           id: variantId,
 
+          /*
+           * REAL SALLA IDS.
+           */
           product_id: productId,
-
           variant_id: variantId,
 
+          /*
+           * Parent product.
+           */
           item_group_id: productId,
 
+          /*
+           * Variant information.
+           */
           variant_name: variantName,
 
           name: variantName
@@ -452,22 +377,17 @@ export async function getProducts(
               )} - ${variantName}`
             : product.name,
 
-          sku:
-            sku.sku ??
-            "",
+          /*
+           * SKU data.
+           */
+          sku: sku.sku ?? "",
+          barcode: sku.barcode ?? "",
+          mpn: sku.mpn ?? "",
+          gtin: sku.gtin ?? "",
 
-          barcode:
-            sku.barcode ??
-            "",
-
-          mpn:
-            sku.mpn ??
-            "",
-
-          gtin:
-            sku.gtin ??
-            "",
-
+          /*
+           * Stock.
+           */
           quantity: stock,
 
           unlimited_quantity:
@@ -475,6 +395,9 @@ export async function getProducts(
             product.unlimited_quantity ??
             false,
 
+          /*
+           * Price.
+           */
           price:
             sku.price?.amount > 0
               ? sku.price
@@ -485,6 +408,9 @@ export async function getProducts(
               ? sku.sale_price
               : null,
 
+          /*
+           * Weight.
+           */
           weight:
             sku.weight ??
             product.weight ??
@@ -495,6 +421,9 @@ export async function getProducts(
             product.weight_type ??
             null,
 
+          /*
+           * Image.
+           */
           main_image:
             getVariantImage(
               product,
@@ -505,6 +434,10 @@ export async function getProducts(
             product.images?.[0]?.url ??
             "",
 
+          /*
+           * Keep the actual option IDs
+           * for future checkout mapping.
+           */
           related_option_values:
             optionValueIds,
         });
@@ -530,7 +463,6 @@ export async function getProducts(
   return products;
 }
 
-
 function getVariantName(
   product: any,
   optionValueIds: number[]
@@ -546,8 +478,7 @@ function getVariantName(
       ) {
         names.push(
           value.name ??
-          value.translations?.ar
-            ?.option_details_name ??
+          value.translations?.ar?.option_details_name ??
           ""
         );
       }
@@ -558,7 +489,6 @@ function getVariantName(
     .filter(Boolean)
     .join(" / ");
 }
-
 
 function getVariantImage(
   product: any,
@@ -581,35 +511,24 @@ function getVariantImage(
   return "";
 }
 
-
-function normalizeProduct(
-  product: any
-) {
+function normalizeProduct(product: any) {
   const productId = String(product.id);
 
   return {
     ...product,
 
     /*
-     * Normal product:
-     * g:id = product ID
+     * Meta ID always starts with 2.
      */
-    id: productId,
+    id: `${productId}`,
 
+    /*
+     * Real Salla product ID.
+     */
     product_id: productId,
 
-    /*
-     * Empty because this is
-     * NOT a variant.
-     */
     variant_id: "",
 
-    /*
-     * IMPORTANT:
-     *
-     * Do NOT set item_group_id
-     * for a product that has no variants.
-     */
     item_group_id: "",
 
     variant_name: "",
@@ -629,40 +548,25 @@ function normalizeProduct(
       product.images?.[0]?.url ??
       "",
 
-    sku:
-      product.sku ??
-      "",
-
-    barcode:
-      product.barcode ??
-      "",
-
-    mpn:
-      product.mpn ??
-      "",
-
-    gtin:
-      product.gtin ??
-      "",
+    sku: product.sku ?? "",
+    barcode: product.barcode ?? "",
+    mpn: product.mpn ?? "",
+    gtin: product.gtin ?? "",
 
     quantity:
-      product.quantity ??
-      0,
+      product.quantity ?? 0,
 
     unlimited_quantity:
       product.unlimited_quantity ??
       false,
 
     weight:
-      product.weight ??
-      null,
+      product.weight ?? null,
 
     weight_type:
-      product.weight_type ??
-      null,
+      product.weight_type ?? null,
   };
 }
-
 
 function removeVariantFromName(
   productName: string,
@@ -712,7 +616,6 @@ function removeVariantFromName(
 
   return product;
 }
-
 
 export async function getToken() {
   const response = await fetch(
