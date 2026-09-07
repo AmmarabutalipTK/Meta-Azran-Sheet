@@ -1,12 +1,32 @@
 import { FastifyInstance } from "fastify";
-import { generateXml } from "../services/xml";
+import {
+  generateXml,
+  getProducts,
+  getToken,
+} from "../services/xml";
 
 export default async function feedRoutes(
   fastify: FastifyInstance
 ) {
   fastify.get("/feed.xml", async (_, reply) => {
     try {
-      const xml = await generateXml();
+      // Get Salla token
+      const tokenResponse = await getToken();
+
+      const token =
+        tokenResponse?.data?.access_token ??
+        tokenResponse?.access_token ??
+        "";
+
+      if (!token) {
+        throw new Error("Salla access token not found");
+      }
+
+      // Get products + variants from Salla
+      const products = await getProducts(token);
+
+      // Generate Meta-compatible XML
+      const xml = generateXml(products);
 
       return reply
         .type("application/xml; charset=utf-8")
