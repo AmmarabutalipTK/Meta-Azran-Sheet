@@ -12,16 +12,12 @@ export default async function feedRoutes(
         .type("application/xml; charset=utf-8")
         .send(xml);
     } catch (error: any) {
-      console.error("FEED ERROR:", error);
+      fastify.log.error(error);
 
       return reply
         .code(500)
         .type("text/plain")
-        .send(
-          error?.stack ||
-          error?.message ||
-          String(error)
-        );
+        .send("Failed to generate feed");
     }
   });
 }
