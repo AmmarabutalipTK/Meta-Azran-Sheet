@@ -1,12 +1,22 @@
 import Fastify from "fastify";
-import feed from "./routes/feed";
+import feedRoutes from "./routes/feed";
 
 const app = Fastify({
   logger: true,
 });
 
-app.register(feed);
+app.register(feedRoutes);
+
+app.get("/health", async () => {
+  return {
+    status: "ok",
+  };
+});
 
 app.listen({
-  port: 3010,
+  // host: "127.0.0.1",
+  port: 3015,
+}).catch((error) => {
+  app.log.error(error);
+  process.exit(1);
 });

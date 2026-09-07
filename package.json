@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "fast-xml-parser": "^5.11.1",
     "fastify": "^5.10.0",
     "googleapis": "^173.0.0"
   },

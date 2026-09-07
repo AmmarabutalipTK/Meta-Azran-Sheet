@@ -1,5 +1,8 @@
 const SALLA_API_URL = "https://api.salla.dev/admin/v2";
 
+const SOURCE_FEED_URL =
+  "https://azranz39.com/feed/xml/eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1IjozMjU5ODQ2NjgsInMiOjMyNTk4NDY2OCwiaWF0IjoxNzU5MzA3NDEyfQ.Z50O8R9xqUWGtXmO4ZKRHd_zVzo6eGdZAdmti-CnMpU/ar/SAR";
+
 function getAuthHeader(token: string): string {
   const cleanToken = token.trim();
 
@@ -8,12 +11,12 @@ function getAuthHeader(token: string): string {
     : `Bearer ${cleanToken}`;
 }
 
-async function getProductDetails(
+async function getProductVariants(
   token: string,
   productId: string | number
 ) {
   const response = await fetch(
-    `${SALLA_API_URL}/products/${productId}`,
+    `${SALLA_API_URL}/products/${productId}/variants`,
     {
       headers: {
         Authorization: getAuthHeader(token),
@@ -24,203 +27,239 @@ async function getProductDetails(
 
   if (!response.ok) {
     throw new Error(
-      `Failed to fetch product details ${productId}: ${response.status}`
+      `Failed to fetch variants ${productId}: ${response.status}`
     );
   }
 
   const json = await response.json();
 
-  return json.data;
+  return json.data ?? [];
 }
 
-export async function getProducts(token: string) {
-  let page = 1;
+export async function getSourceFeed() {
+  const response = await fetch(SOURCE_FEED_URL, {
+    headers: {
+      Accept: "application/xml",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch source feed: ${response.status}`
+    );
+  }
+
+  return response.text();
+}
+
+export async function getProductsFromFeed(token: string) {
+  const xml = await getSourceFeed();
+
+  const itemMatches = xml.match(/<item>[\s\S]*?<\/item>/g) ?? [];
+
   const products: any[] = [];
 
-  while (true) {
-    const response = await fetch(
-      `${SALLA_API_URL}/products?page=${page}`,
-      {
-        headers: {
-          Authorization: getAuthHeader(token),
-          Accept: "application/json",
-        },
-      }
-    );
+  for (const itemXml of itemMatches) {
+    const productId = getTagValue(itemXml, "g:id");
 
-    if (!response.ok) {
-      const body = await response.text();
-
-      throw new Error(
-        `Failed to fetch products page ${page}: ${response.status} ${body}`
-      );
+    if (!productId) {
+      continue;
     }
 
-    const json = await response.json();
+    try {
+      const variants = await getProductVariants(
+        token,
+        productId
+      );
 
-    for (const product of json.data ?? []) {
-      if (
-        !product.is_available ||
-        product.status !== "sale"
-      ) {
+      // No variants
+      if (!variants.length) {
+        products.push({
+          xml: itemXml,
+          product_id: productId,
+          variant_id: null,
+        });
+
         continue;
       }
 
-      try {
-        // Always fetch details because listing API
-        // may return empty options/skus.
-        const details = await getProductDetails(
-          token,
-          product.id
-        );
-
-        const skus = details?.skus ?? [];
-        const options = details?.options ?? [];
-
-        const optionValueMap = new Map<number, any>();
-
-        for (const option of options) {
-          for (const value of option.values ?? []) {
-            optionValueMap.set(Number(value.id), value);
-          }
-        }
-
-        // Normal product
-        if (skus.length === 0) {
-          products.push(
-            normalizeProduct({
-              ...product,
-              ...details,
-            })
-          );
-
+      // Product has variants
+      for (const variant of variants) {
+        if (
+          !variant.unlimited_quantity &&
+          Number(variant.stock_quantity ?? 0) <= 0
+        ) {
           continue;
         }
 
-        // Product with variants
-        for (const sku of skus) {
-          if (
-            !sku.unlimited_quantity &&
-            Number(sku.stock_quantity ?? 0) <= 0
-          ) {
-            continue;
-          }
-
-          const values = (
-            sku.related_option_values ?? []
-          )
-            .map((id: string | number) =>
-              optionValueMap.get(Number(id))
-            )
-            .filter(Boolean);
-
-          const variantName = values
-            .map((value: any) => value.name)
-            .filter(Boolean)
-            .join(" / ");
-
-          const baseName = removeVariantFromName(
-            product.name,
-            variantName
-          );
-
-          const variantImage =
-            sku.image?.url ??
-            values.find(
-              (value: any) => value.image_url
-            )?.image_url ??
-            details?.main_image ??
-            product.main_image ??
-            details?.images?.[0]?.url ??
-            product.images?.[0]?.url ??
-            "";
-
-          const price =
-            sku.taxed_price ??
-            sku.price ??
-            details?.taxed_price ??
-            product.taxed_price ??
-            product.price;
-
-          const salePrice =
-            sku.taxed_sale_price ??
-            sku.sale_price ??
-            null;
-
-          products.push({
-            ...product,
-
-            id: `sku_${sku.id}`,
-
-            item_group_id: String(product.id),
-
-            name: variantName
-              ? `${baseName} - ${variantName}`
-              : product.name,
-
-            variant_name: variantName,
-
-            sku: sku.sku ?? "",
-            barcode: sku.barcode ?? "",
-            mpn: sku.mpn ?? "",
-            gtin: sku.gtin ?? "",
-
-            quantity:
-              sku.stock_quantity ??
-              product.quantity ??
-              0,
-
-            unlimited_quantity:
-              sku.unlimited_quantity ??
-              product.unlimited_quantity ??
-              false,
-
-            price,
-            sale_price: salePrice,
-
-            main_image: variantImage,
-
-            weight:
-              sku.weight ??
-              details?.weight ??
-              product.weight,
-
-            weight_type:
-              sku.weight_type ??
-              details?.weight_type ??
-              product.weight_type,
-
-            options,
-            skus: [],
-          });
-        }
-      } catch (error: any) {
-        console.error(
-          `Failed to process product ${product.id}:`,
-          error?.message ?? error
+        const variantName = getVariantName(
+          variant.related_option_values
         );
 
-        products.push(normalizeProduct(product));
+        const feedId = `2${productId}${variant.id}`;
+
+        const variantXml = buildVariantXml(
+          itemXml,
+          {
+            feedId,
+            productId,
+            variantId: String(variant.id),
+            variantName,
+            variant,
+          }
+        );
+
+        products.push({
+          xml: variantXml,
+          product_id: productId,
+          variant_id: String(variant.id),
+        });
       }
+    } catch (error: any) {
+      console.error(
+        `Failed to process variants for ${productId}:`,
+        error?.message ?? error
+      );
+
+      // Keep original product if variant request fails
+      products.push({
+        xml: itemXml,
+        product_id: productId,
+        variant_id: null,
+      });
     }
-
-    const totalPages =
-      json.pagination?.totalPages ??
-      json.pagination?.total_pages ??
-      page;
-
-    if (page >= totalPages) {
-      break;
-    }
-
-    page++;
   }
 
   console.log(
-    `Salla feed generation complete: ${products.length} feed items`
+    `Feed generated: ${products.length} items`
   );
 
   return products;
+}
+
+function getVariantName(values: any[]): string {
+  if (!Array.isArray(values)) {
+    return "";
+  }
+
+  return values
+    .map((value) => {
+      if (typeof value === "string") {
+        return value;
+      }
+
+      return (
+        value?.name ??
+        value?.value ??
+        value?.option_value ??
+        ""
+      );
+    })
+    .filter(Boolean)
+    .join(" / ");
+}
+
+function buildVariantXml(
+  originalXml: string,
+  data: {
+    feedId: string;
+    productId: string;
+    variantId: string;
+    variantName: string;
+    variant: any;
+  }
+) {
+  let xml = originalXml;
+
+  const baseTitle = getTagValue(xml, "g:title") ?? "";
+
+  const title = data.variantName
+    ? `${removeVariantFromName(
+        baseTitle,
+        data.variantName
+      )} - ${data.variantName}`
+    : baseTitle;
+
+  xml = replaceTag(
+    xml,
+    "g:id",
+    data.feedId
+  );
+
+  xml = replaceTag(
+    xml,
+    "guid",
+    data.feedId
+  );
+
+  xml = replaceTag(
+    xml,
+    "g:title",
+    escapeXml(title)
+  );
+
+  /*
+   * Parent product ID.
+   * This is useful internally and does not affect
+   * the Meta catalog fields.
+   */
+  xml = insertAfterId(
+    xml,
+    `<product_id>${escapeXml(data.productId)}</product_id>
+<variant_id>${escapeXml(data.variantId)}</variant_id>
+<g:item_group_id>${escapeXml(data.productId)}</g:item_group_id>`
+  );
+
+  const regularPrice =
+    data.variant.regular_price?.amount ??
+    data.variant.price?.amount;
+
+  const salePrice =
+    data.variant.sale_price?.amount;
+
+  if (regularPrice != null) {
+    xml = replaceTag(
+      xml,
+      "g:price",
+      `${Number(regularPrice).toFixed(2)} SAR`
+    );
+  }
+
+  if (salePrice != null && Number(salePrice) > 0) {
+    xml = replaceTag(
+      xml,
+      "g:sale_price",
+      `${Number(salePrice).toFixed(2)} SAR`
+    );
+  } else {
+    xml = removeTag(xml, "g:sale_price");
+  }
+
+  const quantity =
+    data.variant.stock_quantity;
+
+  if (
+    !data.variant.unlimited_quantity &&
+    quantity != null &&
+    Number(quantity) <= 0
+  ) {
+    xml = replaceTag(
+      xml,
+      "g:availability",
+      "out of stock"
+    );
+  }
+
+  if (data.variant.sku) {
+    xml = insertAfterId(
+      xml,
+      `<g:mpn>${escapeXml(
+        String(data.variant.sku)
+      )}</g:mpn>`
+    );
+  }
+
+  return xml;
 }
 
 function removeVariantFromName(
@@ -231,27 +270,124 @@ function removeVariantFromName(
     return productName;
   }
 
-  const separatorIndex = productName.lastIndexOf("|");
+  const product = productName.trim();
+  const variant = variantName.trim();
 
-  if (separatorIndex === -1) {
-    return productName;
+  if (product === variant) {
+    const separatorIndex = product.lastIndexOf("|");
+
+    if (separatorIndex !== -1) {
+      return product.slice(0, separatorIndex).trim();
+    }
+
+    return product;
   }
 
-  const suffix = productName
-    .slice(separatorIndex + 1)
-    .trim();
+  if (product.includes(variant)) {
+    return product;
+  }
 
-  if (
-    suffix === variantName ||
-    suffix.includes(variantName) ||
-    variantName.includes(suffix)
-  ) {
-    return productName
-      .slice(0, separatorIndex)
+  const separatorIndex = product.lastIndexOf("|");
+
+  if (separatorIndex !== -1) {
+    const suffix = product
+      .slice(separatorIndex + 1)
       .trim();
+
+    if (
+      suffix === variant ||
+      variant.includes(suffix)
+    ) {
+      return product.slice(0, separatorIndex).trim();
+    }
   }
 
-  return productName;
+  return product;
+}
+
+function getTagValue(
+  xml: string,
+  tag: string
+): string | null {
+  const escapedTag = tag.replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&"
+  );
+
+  const regex = new RegExp(
+    `<${escapedTag}>([\\s\\S]*?)<\\/${escapedTag}>`
+  );
+
+  const match = xml.match(regex);
+
+  return match
+    ? decodeXml(match[1].trim())
+    : null;
+}
+
+function replaceTag(
+  xml: string,
+  tag: string,
+  value: string
+): string {
+  const escapedTag = tag.replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&"
+  );
+
+  const regex = new RegExp(
+    `<${escapedTag}>[\\s\\S]*?<\\/${escapedTag}>`
+  );
+
+  return xml.replace(
+    regex,
+    `<${tag}>${value}</${tag}>`
+  );
+}
+
+function removeTag(
+  xml: string,
+  tag: string
+): string {
+  const escapedTag = tag.replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&"
+  );
+
+  const regex = new RegExp(
+    `\\s*<${escapedTag}>[\\s\\S]*?<\\/${escapedTag}>`,
+    "g"
+  );
+
+  return xml.replace(regex, "");
+}
+
+function insertAfterId(
+  xml: string,
+  content: string
+): string {
+  return xml.replace(
+    /(<g:id>[\s\S]*?<\/g:id>)/,
+    `$1\n${content}`
+  );
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function decodeXml(value: string): string {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
 }
 
 export async function getToken() {
@@ -273,35 +409,4 @@ export async function getToken() {
   }
 
   return response.json();
-}
-
-function normalizeProduct(product: any) {
-  return {
-    ...product,
-
-    id: String(product.id),
-
-    item_group_id: "",
-
-    price:
-      product.taxed_price ??
-      product.price,
-
-    sale_price:
-      product.taxed_sale_price ??
-      product.sale_price ??
-      null,
-
-    main_image:
-      product.main_image ??
-      product.images?.[0]?.url ??
-      "",
-
-    sku: product.sku ?? "",
-    barcode: product.barcode ?? "",
-    mpn: product.mpn ?? "",
-    gtin: product.gtin ?? "",
-
-    variant_name: "",
-  };
 }
