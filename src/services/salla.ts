@@ -264,7 +264,7 @@ function normalizeProduct(product: any) {
     /*
      * Meta ID always starts with 2.
      */
-    id: `2${productId}`,
+    id: `${productId}`,
 
     /*
      * Real Salla product ID.
