@@ -9,17 +9,55 @@ function escapeXml(value: any): string {
     .replace(/'/g, "&apos;");
 }
 
+function stripHtml(value: any): string {
+  return String(value ?? "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getDescription(product: any): string {
+  const description = stripHtml(
+    product.description ??
+      product.short_description ??
+      product.name ??
+      ""
+  );
+
+  // Keep description at a reasonable length.
+  return description.slice(0, 5000);
+}
+
 function formatPrice(price: any): string {
-  if (price == null) return "";
+  if (price == null) {
+    return "";
+  }
 
   if (typeof price === "object") {
-    const amount = Number(price.amount ?? 0);
+    const amount = Number(price.amount);
+
+    if (!Number.isFinite(amount)) {
+      return "";
+    }
+
     const currency = price.currency ?? "SAR";
 
     return `${amount.toFixed(2)} ${currency}`;
   }
 
-  return `${Number(price).toFixed(2)} SAR`;
+  const amount = Number(price);
+
+  if (!Number.isFinite(amount)) {
+    return "";
+  }
+
+  return `${amount.toFixed(2)} SAR`;
 }
 
 function getAvailability(product: any): string {
@@ -30,15 +68,6 @@ function getAvailability(product: any): string {
   return Number(product.quantity ?? 0) > 0
     ? "in stock"
     : "out of stock";
-}
-
-function getDescription(product: any): string {
-  return (
-    product.description ??
-    product.short_description ??
-    product.name ??
-    ""
-  );
 }
 
 function getLink(product: any): string {
@@ -65,6 +94,24 @@ function getBrand(product: any): string {
     product.brand_name ??
     ""
   );
+}
+
+function getValidGtin(product: any): string {
+  const value = String(
+    product.gtin ??
+      product.barcode ??
+      ""
+  ).trim();
+
+  /*
+   * GTIN must be numeric and one of:
+   * 8, 12, 13 or 14 digits.
+   */
+  if (!/^\d{8}$|^\d{12}$|^\d{13}$|^\d{14}$/.test(value)) {
+    return "";
+  }
+
+  return value;
 }
 
 export async function generateXml(): Promise<string> {
@@ -108,8 +155,11 @@ export async function generateXml(): Promise<string> {
         ? String(product.variant_id)
         : "";
 
-      const sku = product.sku ?? "";
-      const barcode = product.barcode ?? "";
+      const sku = product.sku
+        ? String(product.sku)
+        : "";
+
+      const gtin = getValidGtin(product);
 
       return `
       <item>
@@ -125,61 +175,41 @@ export async function generateXml(): Promise<string> {
 
         <g:image_link>${escapeXml(image)}</g:image_link>
 
-        <g:availability>${availability}</g:availability>
+        <g:availability>${escapeXml(availability)}</g:availability>
 
-        ${
-          price
-            ? `<g:price>${escapeXml(price)}</g:price>`
-            : ""
-        }
+        <g:condition>new</g:condition>
 
-        ${
-          salePrice
-            ? `<g:sale_price>${escapeXml(salePrice)}</g:sale_price>`
-            : ""
-        }
+        ${price
+          ? `<g:price>${escapeXml(price)}</g:price>`
+          : ""}
 
-        ${
-          itemGroupId
-            ? `<g:item_group_id>${escapeXml(
-                itemGroupId
-              )}</g:item_group_id>`
-            : ""
-        }
+        ${salePrice
+          ? `<g:sale_price>${escapeXml(salePrice)}</g:sale_price>`
+          : ""}
 
-        ${
-          brand
-            ? `<g:brand>${escapeXml(brand)}</g:brand>`
-            : ""
-        }
+        ${itemGroupId
+          ? `<g:item_group_id>${escapeXml(itemGroupId)}</g:item_group_id>`
+          : ""}
 
-        ${
-          sku
-            ? `<g:sku>${escapeXml(sku)}</g:sku>`
-            : ""
-        }
+        ${brand
+          ? `<g:brand>${escapeXml(brand)}</g:brand>`
+          : ""}
 
-        ${
-          barcode
-            ? `<g:gtin>${escapeXml(barcode)}</g:gtin>`
-            : ""
-        }
+        ${sku
+          ? `<g:mpn>${escapeXml(sku)}</g:mpn>`
+          : ""}
 
-        ${
-          productId
-            ? `<product_id>${escapeXml(
-                productId
-              )}</product_id>`
-            : ""
-        }
+        ${gtin
+          ? `<g:gtin>${escapeXml(gtin)}</g:gtin>`
+          : ""}
 
-        ${
-          variantId
-            ? `<variant_id>${escapeXml(
-                variantId
-              )}</variant_id>`
-            : ""
-        }
+        ${productId
+          ? `<product_id>${escapeXml(productId)}</product_id>`
+          : ""}
+
+        ${variantId
+          ? `<variant_id>${escapeXml(variantId)}</variant_id>`
+          : ""}
 
         ${
           product.variant_name
@@ -199,11 +229,19 @@ export async function generateXml(): Promise<string> {
 >
   <channel>
     <title>Azran Product Feed</title>
+
     <link>https://azranz39.com</link>
-    <description>Azran products with Salla variants</description>
+
+    <description>
+      Azran products with Salla variants
+    </description>
+
     <language>ar</language>
+
     <generator>Meta Azran Sheet</generator>
+
     <ttl>600</ttl>
+
     ${items}
   </channel>
 </rss>`;
