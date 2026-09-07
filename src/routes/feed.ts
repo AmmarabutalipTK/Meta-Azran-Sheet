@@ -10,34 +10,55 @@ export default async function feedRoutes(
 ) {
   fastify.get("/feed.xml", async (_, reply) => {
     try {
-      // Get Salla token
       const tokenResponse = await getToken();
 
+      fastify.log.info({
+        tokenResponseKeys:
+          tokenResponse &&
+          typeof tokenResponse === "object"
+            ? Object.keys(tokenResponse)
+            : [],
+      }, "Salla token response");
+
       const token =
-        tokenResponse?.data?.access_token ??
-        tokenResponse?.access_token ??
-        "";
+        tokenResponse.accessToken
 
       if (!token) {
-        throw new Error("Salla access token not found");
+        throw new Error(
+          "Salla access token not found"
+        );
       }
 
-      // Get products + variants from Salla
-      const products = await getProducts(token);
+      const products =
+        await getProducts(token);
 
-      // Generate Meta-compatible XML
-      const xml = generateXml(products);
+      fastify.log.info(
+        `Feed products: ${products.length}`
+      );
+
+      const xml =
+        generateXml(products);
 
       return reply
-        .type("application/xml; charset=utf-8")
+        .type(
+          "application/xml; charset=utf-8"
+        )
         .send(xml);
+
     } catch (error: any) {
-      fastify.log.error(error);
+      fastify.log.error(
+        error,
+        "Failed to generate feed"
+      );
 
       return reply
         .code(500)
         .type("text/plain")
-        .send("Failed to generate feed");
+        .send(
+          `Failed to generate feed: ${
+            error?.message ?? error
+          }`
+        );
     }
   });
 }
