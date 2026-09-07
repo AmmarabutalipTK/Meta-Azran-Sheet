@@ -27,18 +27,6 @@ async function sallaFetch(token: string, url: string) {
   return response.json();
 }
 
-async function getProductVariants(
-  token: string,
-  productId: string | number
-) {
-  const json = await sallaFetch(
-    token,
-    `${SALLA_API_URL}/products/${productId}/variants`
-  );
-
-  return json.data ?? [];
-}
-
 export async function getProducts(token: string) {
   const products: any[] = [];
   let page = 1;
@@ -54,171 +42,149 @@ export async function getProducts(token: string) {
         continue;
       }
 
-      try {
-        const variants = await getProductVariants(
-          token,
-          product.id
+      const skus = product.skus ?? [];
+
+      // Normal product
+      if (skus.length === 0) {
+        products.push(normalizeProduct(product));
+        continue;
+      }
+
+      // Product variants / SKUs
+      for (const sku of skus) {
+        const productId = String(product.id);
+        const variantId = String(sku.id);
+
+        const stock = Number(
+          sku.stock_quantity ?? product.quantity ?? 0
         );
 
-        // No variants
-        if (variants.length === 0) {
-          products.push(normalizeProduct(product));
+        if (
+          !sku.unlimited_quantity &&
+          stock <= 0
+        ) {
           continue;
         }
 
-        // Variants
-        for (const variant of variants) {
-          const stock = Number(
-            variant.stock_quantity ?? 0
+        /*
+         * IMPORTANT:
+         *
+         * sku.related_option_values contains OPTION VALUE IDs.
+         *
+         * Example:
+         * 665912211 = option value
+         *
+         * sku.id is the actual variant/SKU ID.
+         *
+         * Example:
+         * 1240497430 = actual variant
+         */
+        const optionValueIds =
+          sku.related_option_values ?? [];
+
+        const variantName =
+          getVariantName(
+            product,
+            optionValueIds
           );
 
-          if (
-            !variant.unlimited_quantity &&
-            stock <= 0
-          ) {
-            continue;
-          }
+        products.push({
+          ...product,
 
-          const productId = String(product.id);
-          const variantId = String(variant.id);
+          /*
+           * Meta ID.
+           *
+           * Always starts with 2.
+           */
+          id: `2${productId}${variantId}`,
 
-          const variantName =
-            variant.related_option_values
-              ?.map((value: any) => {
-                if (typeof value === "string") {
-                  return value;
-                }
+          /*
+           * REAL SALLA IDS.
+           */
+          product_id: productId,
+          variant_id: variantId,
 
-                return (
-                  value?.name ??
-                  value?.value ??
-                  ""
-                );
-              })
-              .filter(Boolean)
-              .join(" / ") ?? "";
+          /*
+           * Parent product.
+           */
+          item_group_id: productId,
 
-          products.push({
-            ...product,
+          /*
+           * Variant information.
+           */
+          variant_name: variantName,
 
-            /*
-             * Meta ID
-             *
-             * Always starts with 2.
-             */
-            id: `2${productId}${variantId}`,
+          name: variantName
+            ? `${removeVariantFromName(
+                product.name,
+                variantName
+              )} - ${variantName}`
+            : product.name,
 
-            /*
-             * Real Salla IDs.
-             */
-            product_id: productId,
-            variant_id: variantId,
+          /*
+           * SKU data.
+           */
+          sku: sku.sku ?? "",
+          barcode: sku.barcode ?? "",
+          mpn: sku.mpn ?? "",
+          gtin: sku.gtin ?? "",
 
-            /*
-             * Meta product group.
-             */
-            item_group_id: productId,
+          /*
+           * Stock.
+           */
+          quantity: stock,
 
-            /*
-             * Variant name.
-             */
-            variant_name: variantName,
+          unlimited_quantity:
+            sku.unlimited_quantity ??
+            product.unlimited_quantity ??
+            false,
 
-            name: variantName
-              ? `${removeVariantFromName(
-                  product.name,
-                  variantName
-                )} - ${variantName}`
-              : product.name,
+          /*
+           * Price.
+           */
+          price:
+            sku.price?.amount > 0
+              ? sku.price
+              : product.price,
 
-            /*
-             * Variant data.
-             */
-            sku:
-              variant.sku ??
-              product.sku ??
-              "",
+          sale_price:
+            sku.sale_price?.amount > 0
+              ? sku.sale_price
+              : null,
 
-            barcode:
-              variant.barcode ??
-              product.barcode ??
-              "",
+          /*
+           * Weight.
+           */
+          weight:
+            sku.weight ??
+            product.weight ??
+            null,
 
-            mpn:
-              variant.mpn ??
-              product.mpn ??
-              "",
+          weight_type:
+            sku.weight_type ??
+            product.weight_type ??
+            null,
 
-            gtin:
-              variant.gtin ??
-              product.gtin ??
-              "",
+          /*
+           * Image.
+           */
+          main_image:
+            getVariantImage(
+              product,
+              optionValueIds
+            ) ??
+            product.main_image ??
+            product.thumbnail ??
+            product.images?.[0]?.url ??
+            "",
 
-            /*
-             * Stock.
-             */
-            quantity: stock,
-
-            unlimited_quantity:
-              variant.unlimited_quantity ??
-              product.unlimited_quantity ??
-              false,
-
-            /*
-             * Price.
-             */
-            price:
-              variant.regular_price?.amount > 0
-                ? variant.regular_price
-                : variant.price ??
-                  product.price,
-
-            sale_price:
-              variant.sale_price?.amount > 0
-                ? variant.sale_price
-                : null,
-
-            /*
-             * Weight.
-             */
-            weight:
-              variant.weight ??
-              product.weight ??
-              null,
-
-            weight_type:
-              variant.weight_type ??
-              product.weight_type ??
-              null,
-
-            /*
-             * Product image.
-             */
-            main_image:
-              variant.image?.url ??
-              variant.main_image ??
-              product.main_image ??
-              product.thumbnail ??
-              product.images?.[0]?.url ??
-              "",
-
-            related_option_values:
-              variant.related_option_values ?? [],
-          });
-        }
-      } catch (error: any) {
-        console.error(
-          `Failed to process product ${product.id}:`,
-          error?.message ?? error
-        );
-
-        /*
-         * Keep the parent product if
-         * the variant request fails.
-         */
-        products.push(
-          normalizeProduct(product)
-        );
+          /*
+           * Keep the actual option IDs
+           * for future checkout mapping.
+           */
+          related_option_values:
+            optionValueIds,
+        });
       }
     }
 
@@ -239,6 +205,54 @@ export async function getProducts(token: string) {
   );
 
   return products;
+}
+
+function getVariantName(
+  product: any,
+  optionValueIds: number[]
+): string {
+  const names: string[] = [];
+
+  for (const option of product.options ?? []) {
+    for (const value of option.values ?? []) {
+      if (
+        optionValueIds.includes(
+          Number(value.id)
+        )
+      ) {
+        names.push(
+          value.name ??
+          value.translations?.ar?.option_details_name ??
+          ""
+        );
+      }
+    }
+  }
+
+  return names
+    .filter(Boolean)
+    .join(" / ");
+}
+
+function getVariantImage(
+  product: any,
+  optionValueIds: number[]
+): string {
+  for (const option of product.options ?? []) {
+    for (const value of option.values ?? []) {
+      if (
+        optionValueIds.includes(
+          Number(value.id)
+        )
+      ) {
+        if (value.image_url) {
+          return value.image_url;
+        }
+      }
+    }
+  }
+
+  return "";
 }
 
 function normalizeProduct(product: any) {
