@@ -96,7 +96,7 @@ export async function getProducts(token: string) {
            *
            * Always starts with 2.
            */
-          id: `2${productId}${variantId}`,
+          id: variantId,
 
           /*
            * REAL SALLA IDS.
